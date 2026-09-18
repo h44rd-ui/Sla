@@ -497,45 +497,75 @@ end
 
 local BALL_NAMES = { TPS = true, PSoccerBall = true }
 local CurrentTPS = nil
+local CurrentBall = nil
 local _tpsCache = nil
+local _ballGeneration = 0
 
-local function getOriginalTPS()
+-- The game constantly recreates/updates the real ball at this exact path.
+-- Never fall back to another TPS anywhere else in Workspace.
+local function FindTPS()
     local folder = Workspace:FindFirstChild("WorkspaceLeaderboards")
-    if not folder then return nil end
+    if not folder then
+        return nil
+    end
     return folder:FindFirstChild("TPS")
 end
 
 local function GetBallPart(Object)
-    if not Object or not Object.Parent then return nil end
-    if Object:IsA("BasePart") then return Object end
+    if not Object or not Object.Parent then
+        return nil
+    end
+    if Object:IsA("BasePart") then
+        return Object
+    end
     if Object:IsA("Model") then
         return Object.PrimaryPart or Object:FindFirstChildWhichIsA("BasePart", true)
     end
     return nil
 end
 
+-- Refreshes BOTH the TPS instance and its current physical BasePart.
+-- This is intentionally called every time a ball-using feature asks for it.
+local function RefreshBall()
+    local tps = FindTPS()
+    local part = GetBallPart(tps)
+
+    if tps ~= CurrentTPS or part ~= CurrentBall then
+        CurrentTPS = tps
+        CurrentBall = part
+        _tpsCache = tps
+        _ballGeneration += 1
+
+        if AimbotGoal then
+            AimbotGoal.BallControl = false
+            AimbotGoal.ShotDetected = false
+            AimbotGoal.LastTouchTime = 0
+            AimbotGoal.LastBallVelocity = Vector3.zero
+            AimbotGoal.ControlledBall = nil
+            AimbotGoal.ControlledTPS = nil
+        end
+    end
+
+    return CurrentTPS, CurrentBall, _ballGeneration
+end
+
 local function GetCurrentTPS()
-    local tps = getOriginalTPS()
-    CurrentTPS = tps
-    _tpsCache = tps
+    local tps = RefreshBall()
     return tps
 end
 
 local function GetCurrentBall()
-    return GetBallPart(GetCurrentTPS())
+    local _, ball = RefreshBall()
+    return ball
 end
 
-local _nearestBall, _nearestDist = nil, math.huge
 local function getNearestBall()
-    local ball = GetCurrentBall()
+    local _, ball = RefreshBall()
     local hrp = State.HRP
     if not ball or not hrp then
-        _nearestBall, _nearestDist = nil, math.huge
         return nil, math.huge
     end
-    _nearestBall = ball
-    _nearestDist = (hrp.Position - ball.Position).Magnitude
-    return _nearestBall, _nearestDist
+    return ball, (hrp.Position - ball.Position).Magnitude
 end
 
 local ESPBall         = false
@@ -561,19 +591,8 @@ end
 
 local TPS_FOLDER_HINT = "WorkspaceLeaderboards"
 
-local function resolveTPS()
-    return getOriginalTPS()
-end
-
 local function scheduleTPSTry()
-    defer(function()
-        _tpsCache = resolveTPS()
-        CurrentTPS = _tpsCache
-    end)
-end
-
-local function FindTPS()
-    return GetCurrentTPS()
+    RefreshBall()
 end
 
 local function GetPosition(Object)
@@ -1093,6 +1112,8 @@ local function fireCatchBall(ball)
 end
 
 RunService.Heartbeat:Connect(function()
+    -- Refresh the original game ball every heartbeat before any feature uses it.
+    RefreshBall()
     local now = clock()
     Reach:step(now, "")
     GKReach:step(now, "GK:")
@@ -1149,15 +1170,15 @@ RunService.Heartbeat:Connect(function()
 end)
 
 RunService.RenderStepped:Connect(function()
-    -- Every visual update resolves the game's current original TPS again.
-    GetCurrentTPS()
+    -- Every visual frame resolves the game's current original TPS again.
+    RefreshBall()
     UpdateESP()
 end)
 
 Workspace.DescendantAdded:Connect(function(d)
-    if d.Name == "TPS" or d.Name == TPS_FOLDER_HINT then
+    if d.Name == "TPS" or d.Name == "WorkspaceLeaderboards" then
         defer(function()
-            GetCurrentTPS()
+            RefreshBall()
             if AimbotGoal.Enabled then bindAimbotTouch() end
             if Telekinesis.Enabled then
                 local ball = GetCurrentBall()
@@ -1171,17 +1192,18 @@ end)
 Workspace.DescendantRemoving:Connect(function(d)
     if d == CurrentTPS or d == _tpsCache then
         CurrentTPS = nil
+        CurrentBall = nil
         _tpsCache = nil
         if AimbotGoal.TouchConn then AimbotGoal.TouchConn:Disconnect(); AimbotGoal.TouchConn = nil end
         AimbotGoal.ConnectedBall = nil
         resetAimbotState()
         if ESPHighlight then ESPHighlight.Adornee = nil; ESPHighlight.Enabled = false end
         if ESPLine then ESPLine.Visible = false end
-        defer(function() GetCurrentTPS() end)
+        defer(function() RefreshBall() end)
     end
 end)
 
-GetCurrentTPS()
+RefreshBall()
 
 local Follow = {
     Enabled      = false,
